@@ -8,6 +8,8 @@ devices.json
 snapshot.json
 tuya-raw.json
 *.log
+.config-local.json
+tuya-album-lights-config.json
 .DS_Store
 Thumbs.db
 *.swp

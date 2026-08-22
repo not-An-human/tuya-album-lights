@@ -262,6 +262,11 @@
       saveSettings(next);
       lastArt = "";
       lastHsvKey = "";
+      fetch(`${next.bridgeUrl.replace(/\/$/, "")}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      }).catch(() => {});
       Spicetify.PopupModal.hide();
       Spicetify.showNotification("Tuya Album Lights settings saved");
       handleSongChange();

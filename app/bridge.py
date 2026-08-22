@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
-"""Local CORS bridge so a Spicetify extension can talk to Tuya Cloud.
+"""Local Tuya bridge + Spotify album-colour sync.
 
-Spotify's origin is not allowed by Tuya's API, so this tiny localhost
-server signs and forwards colour commands.
-
-Bind: 127.0.0.1:18765  (localhost only)
+Listens on 127.0.0.1:18765 for the Spicetify UI, and also polls the
+desktop Spotify player directly (playerctl) so sync keeps working even
+when the Spotify client cannot call localhost.
 """
 
 from __future__ import annotations
 
+import colorsys
 import hashlib
 import hmac
 import json
+import os
+import subprocess
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.request import Request, urlopen
+from io import BytesIO
+from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 HOST = "127.0.0.1"
 PORT = 18765
+POLL_SECONDS = 2.0
 
 REGIONS = {
     "cn": "openapi.tuyacn.com",
@@ -33,9 +40,37 @@ REGIONS = {
     "sg": "openapi-sg.iotbing.com",
 }
 
-# Tiny in-memory token cache: (access_id, region) -> {token, host, expire_at}
 _TOKEN = {}
-TOKEN_REFRESH_SKEW = 120  # refresh 2 minutes before Tuya expiry
+TOKEN_REFRESH_SKEW = 120
+_CONFIG_LOCK = threading.Lock()
+_CONFIG: dict = {}
+
+
+def config_path() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA") or Path.home())
+        return base / "tuya-album-lights" / "config.json"
+    return Path.home() / ".config" / "tuya-album-lights" / "config.json"
+
+
+def load_config() -> dict:
+    global _CONFIG
+    path = config_path()
+    if path.is_file():
+        try:
+            _CONFIG = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            _CONFIG = {}
+    return _CONFIG
+
+
+def save_config(data: dict) -> None:
+    global _CONFIG
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged = {**_CONFIG, **data}
+    path.write_text(json.dumps(merged, indent=2) + "\n")
+    _CONFIG = merged
 
 
 def _sha256_hex(data: str) -> str:
@@ -64,7 +99,7 @@ def tuya_request(
         headers["Content-type"] = "application/json"
         headers["Signature-Headers"] = "Content-type"
 
-    now = str(int(__import__("time").time() * 1000))
+    now = str(int(time.time() * 1000))
     payload = access_id + (token or "") + now
     payload += (
         f"{method}\n"
@@ -109,7 +144,7 @@ def tuya_request(
 def get_token(access_id: str, access_secret: str, region: str) -> tuple[str, str]:
     cache_key = f"{access_id}:{region}"
     cached = _TOKEN.get(cache_key)
-    now = __import__("time").time()
+    now = time.time()
     if cached and now < cached.get("expire_at", 0):
         return cached["token"], cached["host"]
 
@@ -174,14 +209,120 @@ def set_colour(payload: dict) -> dict:
     return data
 
 
+def rgb_to_tuya_hsv(r: int, g: int, b: int) -> dict:
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    s = max(s, 0.55)
+    v = max(v, 0.75)
+    return {
+        "h": int(round(h * 360)) % 360,
+        "s": int(round(s * 1000)),
+        "v": int(round(v * 1000)),
+    }
+
+
+def dominant_rgb(image_bytes: bytes) -> tuple[int, int, int] | None:
+    from PIL import Image
+
+    im = Image.open(BytesIO(image_bytes)).convert("RGB")
+    im.thumbnail((64, 64))
+    best = None
+    best_score = -1.0
+    pixels = list(getattr(im, "get_flattened_data", im.getdata)())
+    step = max(1, len(pixels) // 400)
+    for r, g, b in pixels[::step]:
+        mx, mn = max(r, g, b), min(r, g, b)
+        if mx < 40:
+            continue
+        sat = (mx - mn) / mx if mx else 0
+        score = sat * 2 + (r + g + b) / (255 * 3)
+        if score > best_score:
+            best_score = score
+            best = (r, g, b)
+    return best
+
+
+def playerctl(*args: str) -> str:
+    for prefix in (["playerctl", "-p", "spotify"], ["playerctl"]):
+        try:
+            return subprocess.check_output(
+                [*prefix, *args],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            continue
+    return ""
+
+
+def fetch_bytes(url: str) -> bytes:
+    req = Request(url, headers={"User-Agent": "tuya-album-lights"})
+    with urlopen(req, timeout=10) as resp:
+        return resp.read()
+
+
+def poll_spotify() -> None:
+    last_art = ""
+    log("spotify poller started")
+    while True:
+        try:
+            with _CONFIG_LOCK:
+                cfg = dict(_CONFIG)
+            if cfg.get("enabled", True) is False:
+                time.sleep(POLL_SECONDS)
+                continue
+            if not all(cfg.get(k) for k in ("accessId", "accessSecret", "deviceId")):
+                time.sleep(POLL_SECONDS)
+                continue
+            if playerctl("status") != "Playing":
+                time.sleep(POLL_SECONDS)
+                continue
+            art = playerctl("metadata", "mpris:artUrl")
+            title = playerctl("metadata", "xesam:title")
+            artist = playerctl("metadata", "xesam:artist")
+            if not art or art == last_art:
+                time.sleep(POLL_SECONDS)
+                continue
+            rgb = dominant_rgb(fetch_bytes(art))
+            if not rgb:
+                last_art = art
+                time.sleep(POLL_SECONDS)
+                continue
+            hsv = rgb_to_tuya_hsv(*rgb)
+            result = set_colour(
+                {
+                    "accessId": cfg["accessId"],
+                    "accessSecret": cfg["accessSecret"],
+                    "region": cfg.get("region") or "in",
+                    "deviceId": cfg["deviceId"],
+                    "hsv": hsv,
+                }
+            )
+            if result.get("success"):
+                last_art = art
+                log(f"sync {artist} — {title} RGB{rgb} HSV{hsv}")
+            else:
+                log(f"tuya error: {result}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"poller error: {exc}")
+        time.sleep(POLL_SECONDS)
+
+
+def log(msg: str) -> None:
+    sys.stderr.write("[bridge] " + msg + "\n")
+    sys.stderr.flush()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
-        sys.stderr.write("[bridge] " + (fmt % args) + "\n")
+        log(fmt % args)
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Max-Age", "86400")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -190,25 +331,60 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/health"):
-            self._json(200, {"ok": True, "service": "tuya-album-lights-bridge"})
+            with _CONFIG_LOCK:
+                ready = bool(
+                    _CONFIG.get("accessId")
+                    and _CONFIG.get("accessSecret")
+                    and _CONFIG.get("deviceId")
+                )
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "service": "tuya-album-lights-bridge",
+                    "configured": ready,
+                },
+            )
             return
         self._json(404, {"ok": False, "msg": "not found"})
 
     def do_POST(self):
-        if self.path not in ("/color", "/v1/color"):
-            self._json(404, {"ok": False, "msg": "not found"})
-            return
         length = int(self.headers.get("Content-Length") or 0)
         try:
-            payload = json.loads(self.rfile.read(length).decode())
+            payload = json.loads(self.rfile.read(length).decode() or "{}")
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._json(400, {"ok": False, "msg": "invalid json"})
+            return
+
+        if self.path in ("/settings", "/v1/settings"):
+            needed = {
+                k: payload[k]
+                for k in ("accessId", "accessSecret", "region", "deviceId", "enabled")
+                if k in payload
+            }
+            with _CONFIG_LOCK:
+                save_config(needed)
+            self._json(200, {"ok": True})
+            return
+
+        if self.path not in ("/color", "/v1/color"):
+            self._json(404, {"ok": False, "msg": "not found"})
             return
         required = ("accessId", "accessSecret", "deviceId", "hsv")
         missing = [k for k in required if k not in payload]
         if missing:
             self._json(400, {"ok": False, "msg": f"missing {missing}"})
             return
+        with _CONFIG_LOCK:
+            save_config(
+                {
+                    "accessId": payload["accessId"],
+                    "accessSecret": payload["accessSecret"],
+                    "region": payload.get("region") or "in",
+                    "deviceId": payload["deviceId"],
+                    "enabled": True,
+                }
+            )
         try:
             result = set_colour(payload)
         except Exception as exc:  # noqa: BLE001
@@ -230,9 +406,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    load_config()
+    threading.Thread(target=poll_spotify, name="spotify-poller", daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"tuya-album-lights bridge on http://{HOST}:{PORT}")
-    print("Keep this running while Spotify is open. Ctrl+C to stop.")
+    log(f"listening on http://{HOST}:{PORT}")
+    log(f"config {config_path()}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

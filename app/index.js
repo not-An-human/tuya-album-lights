@@ -38,17 +38,20 @@ function Page() {
   const [bridgeUrl, setBridgeUrl] = useState(initial.bridgeUrl);
 
   const onSave = () => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        enabled,
-        accessId: accessId.trim(),
-        accessSecret: accessSecret.trim(),
-        region,
-        deviceId: deviceId.trim(),
-        bridgeUrl: bridgeUrl.trim() || DEFAULTS.bridgeUrl,
-      })
-    );
+    const payload = {
+      enabled,
+      accessId: accessId.trim(),
+      accessSecret: accessSecret.trim(),
+      region,
+      deviceId: deviceId.trim(),
+      bridgeUrl: bridgeUrl.trim() || DEFAULTS.bridgeUrl,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    fetch(`${payload.bridgeUrl.replace(/\/$/, "")}/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
     Spicetify.showNotification("Tuya keys saved — skip a track to sync");
   };
 
