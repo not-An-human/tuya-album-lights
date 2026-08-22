@@ -47,8 +47,7 @@ The JS extension is the same on every OS. A small Python bridge has to run on th
    - Access Secret / Client Secret
 6. Copy the light’s **Device ID** from **Devices**.
 
-Phone app region: **Me → Settings → Account and Security → Region**.
-
+**Make sure for wipro lights they are added to the tuya smart app**
 ---
 
 ## 2. Install
