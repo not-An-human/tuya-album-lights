@@ -15,7 +15,8 @@
 
   let lastArt = "";
   let lastHsvKey = "";
-  let pending = false;
+  let inflight = false;
+  let wantedArt = "";
 
   function waitForSpicetify() {
     if (!window.Spicetify || !Spicetify.Player || !Spicetify.Menu) {
@@ -75,86 +76,115 @@
     return null;
   }
 
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label || "timeout")), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
   async function sendColour(settings, hsv) {
     const url = `${settings.bridgeUrl.replace(/\/$/, "")}/color`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accessId: settings.accessId,
-        accessSecret: settings.accessSecret,
-        region: settings.region,
-        deviceId: settings.deviceId,
-        hsv,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) {
-      const msg = data.msg || data.tuya?.msg || `HTTP ${res.status}`;
-      throw new Error(msg);
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessId: settings.accessId,
+          accessSecret: settings.accessSecret,
+          region: settings.region,
+          deviceId: settings.deviceId,
+          hsv,
+        }),
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        const msg = data.msg || data.tuya?.msg || `HTTP ${res.status}`;
+        throw new Error(msg);
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
-  async function handleSongChange() {
+  function currentArtUrl() {
+    const item = Spicetify.Player.data?.item;
+    if (!item) return "";
+    return (
+      item.metadata?.image_xlarge_url ||
+      item.metadata?.image_large_url ||
+      item.metadata?.image_url ||
+      item.album?.images?.[0]?.url ||
+      ""
+    );
+  }
+
+  async function applyArt(art) {
     const settings = getSettings();
     if (!settings.enabled) return;
     if (!settings.accessId || !settings.accessSecret || !settings.deviceId) {
       return;
     }
+    if (!Spicetify.extractColorPreset) return;
 
-    const item = Spicetify.Player.data?.item;
-    if (!item) return;
-
-    const art =
-      item.metadata?.image_xlarge_url ||
-      item.metadata?.image_large_url ||
-      item.metadata?.image_url ||
-      item.album?.images?.[0]?.url ||
-      "";
-
-    if (!art || art === lastArt || pending) return;
-    pending = true;
-
-    try {
-      let hsv;
-      if (Spicetify.extractColorPreset) {
-        const colors = await Spicetify.extractColorPreset(art);
-        const rgb = pickRgb(colors);
-        if (!rgb) {
-          pending = false;
-          return;
-        }
-        hsv = rgbToTuyaHsv(rgb.r, rgb.g, rgb.b);
-      } else {
-        pending = false;
-        return;
-      }
-
-      const key = `${hsv.h}:${hsv.s}:${hsv.v}`;
-      if (key === lastHsvKey) {
-        lastArt = art;
-        pending = false;
-        return;
-      }
-
-      await sendColour(settings, hsv);
+    const colors = await withTimeout(
+      Spicetify.extractColorPreset(art),
+      8000,
+      "colour extract timeout"
+    );
+    const rgb = pickRgb(colors);
+    if (!rgb) return;
+    const hsv = rgbToTuyaHsv(rgb.r, rgb.g, rgb.b);
+    const key = `${hsv.h}:${hsv.s}:${hsv.v}`;
+    if (key === lastHsvKey) {
       lastArt = art;
-      lastHsvKey = key;
-      console.debug("[tuya-album-lights]", item.name, hsv);
-    } catch (err) {
-      console.error("[tuya-album-lights]", err);
-      const message = String(err.message || err);
-      if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
-        Spicetify.showNotification(
-          "Tuya Album Lights: start the bundled bridge (python install.py)",
-          true,
-          4000
-        );
-      } else {
-        Spicetify.showNotification(`Tuya Album Lights: ${message}`, true, 4000);
+      return;
+    }
+    await sendColour(settings, hsv);
+    lastArt = art;
+    lastHsvKey = key;
+    console.debug("[tuya-album-lights]", Spicetify.Player.data?.item?.name, hsv);
+  }
+
+  async function handleSongChange() {
+    const art = currentArtUrl();
+    if (!art) return;
+    wantedArt = art;
+    if (inflight) return;
+    inflight = true;
+    try {
+      while (wantedArt) {
+        const next = wantedArt;
+        wantedArt = "";
+        if (next === lastArt) continue;
+        try {
+          await applyArt(next);
+        } catch (err) {
+          console.error("[tuya-album-lights]", err);
+          lastArt = "";
+          const message = String(err.message || err);
+          if (
+            message.includes("Failed to fetch") ||
+            message.includes("NetworkError") ||
+            message.includes("abort")
+          ) {
+            Spicetify.showNotification(
+              "Tuya Album Lights: bridge not responding — it will retry",
+              true,
+              3000
+            );
+          } else {
+            Spicetify.showNotification(`Tuya Album Lights: ${message}`, true, 3000);
+          }
+        }
       }
     } finally {
-      pending = false;
+      inflight = false;
+      if (wantedArt) handleSongChange();
     }
   }
 
@@ -244,10 +274,7 @@
       if (event?.data && !event.data.isPaused) handleSongChange();
     });
     setInterval(() => {
-      const art =
-        Spicetify.Player.data?.item?.metadata?.image_url ||
-        Spicetify.Player.data?.item?.album?.images?.[0]?.url ||
-        "";
+      const art = currentArtUrl();
       if (art && art !== lastArt) handleSongChange();
     }, 2000);
 

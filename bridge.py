@@ -33,8 +33,9 @@ REGIONS = {
     "sg": "openapi-sg.iotbing.com",
 }
 
-# Tiny in-memory token cache: (access_id, region) -> {token, host}
+# Tiny in-memory token cache: (access_id, region) -> {token, host, expire_at}
 _TOKEN = {}
+TOKEN_REFRESH_SKEW = 120  # refresh 2 minutes before Tuya expiry
 
 
 def _sha256_hex(data: str) -> str:
@@ -101,12 +102,15 @@ def tuya_request(
             return json.loads(raw)
         except json.JSONDecodeError:
             return {"success": False, "msg": raw or str(err)}
+    except URLError as err:
+        return {"success": False, "msg": str(err.reason or err)}
 
 
 def get_token(access_id: str, access_secret: str, region: str) -> tuple[str, str]:
     cache_key = f"{access_id}:{region}"
     cached = _TOKEN.get(cache_key)
-    if cached:
+    now = __import__("time").time()
+    if cached and now < cached.get("expire_at", 0):
         return cached["token"], cached["host"]
 
     host = REGIONS.get(region.lower(), REGIONS["in"])
@@ -119,9 +123,16 @@ def get_token(access_id: str, access_secret: str, region: str) -> tuple[str, str
         method="GET",
     )
     if not data.get("success"):
+        _TOKEN.pop(cache_key, None)
         raise RuntimeError(data.get("msg") or json.dumps(data))
-    token = data["result"]["access_token"]
-    _TOKEN[cache_key] = {"token": token, "host": host}
+    result = data["result"]
+    token = result["access_token"]
+    ttl = int(result.get("expire_time") or 7200)
+    _TOKEN[cache_key] = {
+        "token": token,
+        "host": host,
+        "expire_at": now + max(ttl - TOKEN_REFRESH_SKEW, 30),
+    }
     return token, host
 
 
@@ -151,15 +162,15 @@ def set_colour(payload: dict) -> dict:
     data = tuya_request(
         host, path, access_id, access_secret, token, method="POST", body_obj=body
     )
-    if data.get("msg") in ("token invalid", "token expired") or data.get("code") in (
-        1010,
-        1011,
-    ):
-        _TOKEN.pop(f"{access_id}:{region}", None)
-        token, host = get_token(access_id, access_secret, region)
-        data = tuya_request(
-            host, path, access_id, access_secret, token, method="POST", body_obj=body
-        )
+    if not data.get("success"):
+        msg = str(data.get("msg") or "").lower()
+        code = data.get("code")
+        if code in (1004, 1010, 1011) or "token" in msg:
+            _TOKEN.pop(f"{access_id}:{region}", None)
+            token, host = get_token(access_id, access_secret, region)
+            data = tuya_request(
+                host, path, access_id, access_secret, token, method="POST", body_obj=body
+            )
     return data
 
 
