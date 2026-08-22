@@ -1,0 +1,11 @@
+[
+  {
+    "name": "Tuya Album Lights",
+    "description": "Sync Tuya / Wipro / Smart Life RGB lights to the current Spotify album cover colour.",
+    "preview": "img/preview.png",
+    "main": "tuya-album-lights.js",
+    "readme": "README.md",
+    "authors": [{ "name": "not-An-human", "url": "https://github.com/not-An-human" }],
+    "tags": ["tuya", "wipro", "smart life", "album cover", "lights"]
+  }
+]

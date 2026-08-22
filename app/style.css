@@ -1,0 +1,65 @@
+.tal-page {
+  max-width: 560px;
+  padding: 24px 32px 64px;
+  color: var(--spice-text);
+}
+
+.tal-page h1 {
+  font-size: 32px;
+  font-weight: 800;
+  margin: 0 0 8px;
+}
+
+.tal-page p.lead {
+  opacity: 0.7;
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+
+.tal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tal-form label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.tal-form input,
+.tal-form select {
+  background: var(--spice-main-alt, #282828);
+  color: var(--spice-text, #fff);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 14px;
+}
+
+.tal-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-transform: none;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  opacity: 1;
+}
+
+.tal-save {
+  margin-top: 12px;
+  width: fit-content;
+  background: var(--spice-button, #1db954);
+  color: #000;
+  border: none;
+  border-radius: 999px;
+  padding: 12px 22px;
+  font-weight: 800;
+  cursor: pointer;
+}
+

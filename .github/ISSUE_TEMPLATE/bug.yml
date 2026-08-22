@@ -1,0 +1,16 @@
+name: Bug
+description: Something does not work
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Spicetify version (`spicetify -v`), Tuya data centre, RGB bulb model if you know it
+    validations:
+      required: true
