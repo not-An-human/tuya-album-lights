@@ -1,31 +1,32 @@
 # Tuya Album Lights
 
-Spicetify extension that sets a **Tuya / Wipro / Smart Life** RGB light to the colour of the album you are playing in Spotify.
+Spicetify UI + a local Python service that sets a **Tuya / Wipro / Smart Life** RGB light to the colour of the album playing in desktop Spotify.
 
 <img src="img/preview.png" alt="Album cover colour driving a smart bulb" width="420" />
 
-Works on **Windows, macOS, and Linux**. Keys go in a **popup** when Spotify starts (if they are empty). You can also open **Tuya Lights** in the left sidebar, the top-bar bulb button, or the profile menu.
+**Repo:** [github.com/not-An-human/tuya-album-lights](https://github.com/not-An-human/tuya-album-lights)
 
 ## How it works
 
 ```
-Spotify (Spicetify)
-  → album art colour
-  → extension
-  → http://127.0.0.1:18765
-  → bundled bridge.py
+Desktop Spotify (album art)
+  → bundled bridge.py (polls the player, reads the cover)
+  → Tuya Cloud
   → your bulb
+
+Spicetify popup / sidebar
+  → saves Access ID, secret, device ID
 ```
 
-The JS extension is the same on every OS. A small Python bridge has to run on the same PC because Tuya’s API will not accept requests from Spotify itself. `install.py` copies that bridge next to the app and starts it at login on Windows (Startup folder), macOS (LaunchAgent), and Linux (systemd user or desktop autostart).
+The Spotify client cannot call Tuya’s API directly (CORS). The bridge runs on this PC. On Linux it follows Spotify with `playerctl`, so colours keep updating even if the in-app extension cannot reach localhost.
 
 ## What’s in this folder
 
 | File | Purpose |
 | --- | --- |
-| `tuya-album-lights.js` | Spicetify extension (popup + colour sync) |
-| `app/` | Sidebar settings page + bundled `bridge.py` |
-| `install.py` | One installer for Windows / macOS / Linux |
+| `tuya-album-lights.js` | Spicetify extension (settings popup) |
+| `app/` | Sidebar settings page + `bridge.py` |
+| `install.py` | Installer for Windows, macOS, and Linux |
 | `manifest.json` | Spicetify Marketplace listing |
 | `LICENSE` | MIT |
 
@@ -41,18 +42,18 @@ The JS extension is the same on every OS. A small Python bridge has to run on th
    - IoT Core
    - Authorization Token Management
    - Smart Home Basic Service
-4. **Devices → Link Tuya App Account** → scan the QR with **Smart Life** (or the OEM app the bulb is in). Refresh the QR if it expired. Top-right data centre must match the app **Region**.
-5. Copy from **Overview**:
-   - Access ID / Client ID
-   - Access Secret / Client Secret
-6. Copy the light’s **Device ID** from **Devices**.
+4. Put the bulb in the **Tuya Smart** or **Smart Life** app (Wipro’s own app is not enough for linking).
+5. **Devices → Link Tuya App Account** → scan the QR. Refresh it if it expired. Top-right data centre must match the app **Region**.
+6. Copy from **Overview**: Access ID and Access Secret.
+7. Copy the light’s **Device ID** from **Devices**.
 
-**Make sure for wipro lights they are added to the tuya smart app**
+Phone app region: **Me → Settings → Account and Security → Region**.
+
 ---
 
 ## 2. Install
 
-Need [Spicetify](https://spicetify.app/) and [Python 3](https://www.python.org/) on your PATH.
+Need [Spicetify](https://spicetify.app/), [Python 3](https://www.python.org/) (with Pillow), and on Linux [playerctl](https://github.com/altdesktop/playerctl).
 
 ```bash
 python3 install.py
@@ -64,44 +65,31 @@ Windows (if `python3` is not a command):
 python install.py
 ```
 
-That copies the extension, the sidebar app, and `bridge.py`, then sets the bridge to start in the background.
+That copies the extension, the sidebar app, and the bridge, then starts the bridge at login.
 
-Restart Spotify. If keys are empty, a **popup** opens.
+Restart Spotify. If keys are empty, a **popup** opens. You can also use **Tuya Lights** in the left sidebar.
 
-Marketplace → **Installed** only shows extensions installed from Marketplace after this project is a public GitHub repo with topic `spicetify-extensions`.
+| Field | Where it comes from |
+| --- | --- |
+| Access ID | iot.tuya.com → project Overview |
+| Access Secret | same page |
+| Data centre | `in` `eu` `eu-w` `us` `us-e` `sg` `cn` |
+| Device ID | iot.tuya.com → Devices |
+| Bridge URL | `http://127.0.0.1:18765` |
+
+Keys are stored on this computer (`~/.config/tuya-album-lights/config.json` on Linux/macOS).
 
 ---
 
 ## 3. If the light never changes
 
-Open `http://127.0.0.1:18765/health` in a browser. You should see `{"ok": true}`.
+- `http://127.0.0.1:18765/health` should include `"configured": true`
+- Linux: `playerctl -p spotify status` should say `Playing`
+- Linux: `journalctl --user -u tuya-album-lights-bridge -f` should log `sync Artist — Title`
 
-If not, run the bundled bridge:
+Re-run `python3 install.py` if the bridge is not running.
 
-```bash
-python3 install.py
-```
-
-Or start `app/bridge.py` with Python.
-
----
-
-## 4. Put keys in Spotify
-
-1. Open Spotify.
-2. Use the popup, or **Tuya Lights** in the sidebar.
-3. Fill in:
-
-| Field | Example / notes |
-| --- | --- |
-| Enable | on |
-| Access ID | from Tuya project Overview |
-| Access Secret | from Tuya project Overview |
-| Data centre | `in` `eu` `eu-w` `us` `us-e` `sg` `cn` |
-| Device ID | from Tuya Devices list |
-| Bridge URL | `http://127.0.0.1:18765` |
-
-4. Save, play a song, skip once.
+The bulb must support RGB (`colour` / `colour_data_v2`), not white-only.
 
 ---
 
@@ -109,22 +97,13 @@ Or start `app/bridge.py` with Python.
 
 | Symptom | Fix |
 | --- | --- |
-| Notification about starting the bridge | Run `python install.py` (or `python3 install.py`) |
-| permission deny / 1106 | Authorize IoT Core; extend the free trial on iot.tuya.com |
-| QR / data centre error | App **Region** must match project data centre; refresh QR |
-| Light does not change colour | Device must support RGB (`colour` / `colour_data_v2`) |
-| Menu item missing | `spicetify config` should list `tuya-album-lights.js`; then `spicetify apply` |
+| Bridge not running | `python3 install.py` |
+| `"configured": false` | Save keys in the Spotify popup or sidebar |
+| permission deny / 1106 | Authorize IoT Core; extend the free trial |
+| QR / data centre error | App **Region** must match the cloud project |
+| Linux: no colour changes | Install `playerctl`; keep desktop Spotify playing |
 
----
-
-## Publish this to GitHub (you)
-
-1. Create an **empty** repo on GitHub (no README if you are uploading this folder as-is).
-2. Drag everything in **this folder** into the repo.
-3. Suggested topics: `spicetify-extensions`, `tuya`, `spotify`
-4. Optional Marketplace: [Publishing to Marketplace](https://github.com/spicetify/marketplace/wiki/Publishing-to-Marketplace)
-
-After the repo exists, edit `manifest.json` `authors[0].url` to your GitHub profile.
+Marketplace → **Installed** only lists extensions installed from Marketplace. This project is tagged `spicetify-extensions` so it can show up there after GitHub indexes it.
 
 ## License
 

@@ -144,11 +144,22 @@ def start_bridge_now(bridge: Path) -> None:
     subprocess.Popen([PYTHON, str(bridge)], start_new_session=True)
 
 
+def ensure_pillow() -> None:
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        print("Installing Pillow…")
+        subprocess.check_call([PYTHON, "-m", "pip", "install", "--user", "Pillow"])
+
+
 def main() -> None:
     spic = spicetify_config_dir()
     app_dir = spic / "CustomApps" / "tuya-album-lights"
     ext_dir = spic / "Extensions"
     print(f"Spicetify folder: {spic}")
+    ensure_pillow()
+    if sys.platform.startswith("linux") and not shutil.which("playerctl"):
+        print("Note: install playerctl so the bridge can follow desktop Spotify.")
     bridge = copy_files(app_dir, ext_dir)
     run_spicetify("config", "extensions", "tuya-album-lights.js")
     run_spicetify("config", "custom_apps", "tuya-album-lights")
@@ -159,7 +170,7 @@ def main() -> None:
     print("Installed on this OS.")
     print(f"  App + bundled bridge: {app_dir}")
     print(f"  Auto-start:           {autostart}")
-    print("Restart Spotify and paste your Tuya keys in the popup.")
+    print("Restart Spotify and paste your Tuya keys in the popup (or sidebar Tuya Lights).")
 
 
 if __name__ == "__main__":
