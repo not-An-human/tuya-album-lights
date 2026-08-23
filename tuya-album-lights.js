@@ -17,6 +17,7 @@
   let lastHsvKey = "";
   let inflight = false;
   let wantedArt = "";
+  let menuToggle = null;
 
   function waitForSpicetify() {
     if (!window.Spicetify || !Spicetify.Player || !Spicetify.Menu) {
@@ -34,8 +35,34 @@
     }
   }
 
-  function saveSettings(settings) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  function pushSettings(settings) {
+    saveSettings(settings);
+    const base = (settings.bridgeUrl || DEFAULTS.bridgeUrl).replace(/\/$/, "");
+    fetch(`${base}/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    }).catch(() => {});
+  }
+
+  function setToggleState(on) {
+    if (menuToggle && typeof menuToggle.setState === "function") {
+      menuToggle.setState(on);
+    }
+  }
+
+  function toggleLights() {
+    const next = { ...getSettings(), enabled: !getSettings().enabled };
+    lastArt = "";
+    lastHsvKey = "";
+    pushSettings(next);
+    setToggleState(next.enabled);
+    Spicetify.showNotification(
+      next.enabled ? "Album lights on" : "Album lights off",
+      false,
+      2000
+    );
+    if (next.enabled) handleSongChange();
   }
 
   function rgbToTuyaHsv(r, g, b) {
@@ -222,7 +249,7 @@
       <div class="tal-wrap">
         <div class="tal-row">
           <input id="tal-enabled" type="checkbox" ${s.enabled ? "checked" : ""} />
-          <label for="tal-enabled">Enable album colour sync</label>
+          <label for="tal-enabled"><strong>Lights on</strong> — uncheck to stop sync and turn the bulb off</label>
         </div>
         ${field("Tuya Access ID / Client ID", "tal-accessId", "text", s.accessId)}
         ${field("Tuya Access Secret / Client Secret", "tal-accessSecret", "password", s.accessSecret)}
@@ -262,14 +289,13 @@
       saveSettings(next);
       lastArt = "";
       lastHsvKey = "";
-      fetch(`${next.bridgeUrl.replace(/\/$/, "")}/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
-      }).catch(() => {});
+      pushSettings(next);
+      setToggleState(next.enabled);
       Spicetify.PopupModal.hide();
-      Spicetify.showNotification("Tuya Album Lights settings saved");
-      handleSongChange();
+      Spicetify.showNotification(
+        next.enabled ? "Album lights on" : "Album lights off"
+      );
+      if (next.enabled) handleSongChange();
     });
   }
 
@@ -286,10 +312,17 @@
     const bulbIcon =
       `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z"/></svg>`;
 
-    new Spicetify.Menu.Item("Tuya Album Lights", false, openSettings, bulbIcon).register();
+    menuToggle = new Spicetify.Menu.Item(
+      "Album lights",
+      getSettings().enabled,
+      toggleLights,
+      bulbIcon
+    );
+    menuToggle.register();
+    new Spicetify.Menu.Item("Album lights settings", false, openSettings).register();
 
     if (Spicetify.Topbar?.Button) {
-      new Spicetify.Topbar.Button("Tuya Lights", bulbIcon, openSettings, false);
+      new Spicetify.Topbar.Button("Album lights on/off", bulbIcon, toggleLights, false);
     }
 
     const settings = getSettings();

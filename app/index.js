@@ -79,9 +79,23 @@ function Page() {
         react.createElement("input", {
           type: "checkbox",
           checked: enabled,
-          onChange: (e) => setEnabled(e.target.checked),
+          onChange: (e) => {
+            const on = e.target.checked;
+            setEnabled(on);
+            const payload = {
+              ...loadSettings(),
+              enabled: on,
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+            fetch(`${payload.bridgeUrl.replace(/\/$/, "")}/power`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ on }),
+            }).catch(() => {});
+            Spicetify.showNotification(on ? "Album lights on" : "Album lights off");
+          },
         }),
-        " Enable album colour sync"
+        " Lights on (off stops sync and turns the bulb off)"
       ),
       react.createElement(Field, { label: "Access ID / Client ID" },
         react.createElement("input", {

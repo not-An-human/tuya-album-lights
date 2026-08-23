@@ -20,6 +20,8 @@ Spicetify popup / sidebar
 
 The Spotify client cannot call Tuya’s API directly (CORS). The bridge runs on this PC. On Linux it follows Spotify with `playerctl`, so colours keep updating even if the in-app extension cannot reach localhost.
 
+**On/off:** click the bulb in Spotify’s top bar, or **Album lights** in the profile menu. Off stops sync and turns the bulb off.
+
 ## What’s in this folder
 
 | File | Purpose |

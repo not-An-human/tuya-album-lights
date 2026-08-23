@@ -209,6 +209,50 @@ def set_colour(payload: dict) -> dict:
     return data
 
 
+def send_commands(cfg: dict, commands: list) -> dict:
+    access_id = cfg["accessId"].strip()
+    access_secret = cfg["accessSecret"].strip()
+    region = (cfg.get("region") or "in").strip().lower()
+    device_id = cfg["deviceId"].strip()
+    token, host = get_token(access_id, access_secret, region)
+    path = f"/v1.0/iot-03/devices/{device_id}/commands"
+    data = tuya_request(
+        host,
+        path,
+        access_id,
+        access_secret,
+        token,
+        method="POST",
+        body_obj={"commands": commands},
+    )
+    if not data.get("success"):
+        msg = str(data.get("msg") or "").lower()
+        if data.get("code") in (1004, 1010, 1011) or "token" in msg:
+            _TOKEN.pop(f"{access_id}:{region}", None)
+            token, host = get_token(access_id, access_secret, region)
+            data = tuya_request(
+                host,
+                path,
+                access_id,
+                access_secret,
+                token,
+                method="POST",
+                body_obj={"commands": commands},
+            )
+    return data
+
+
+def set_power(on: bool) -> dict:
+    with _CONFIG_LOCK:
+        cfg = dict(_CONFIG)
+    if not all(cfg.get(k) for k in ("accessId", "accessSecret", "deviceId")):
+        return {"success": False, "msg": "not configured"}
+    return send_commands(cfg, [{"code": "switch_led", "value": bool(on)}])
+
+
+_RESET_ART = threading.Event()
+
+
 def rgb_to_tuya_hsv(r: int, g: int, b: int) -> dict:
     h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
     s = max(s, 0.55)
@@ -266,6 +310,9 @@ def poll_spotify() -> None:
     log("spotify poller started")
     while True:
         try:
+            if _RESET_ART.is_set():
+                last_art = ""
+                _RESET_ART.clear()
             with _CONFIG_LOCK:
                 cfg = dict(_CONFIG)
             if cfg.get("enabled", True) is False:
@@ -343,6 +390,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "service": "tuya-album-lights-bridge",
                     "configured": ready,
+                    "enabled": _CONFIG.get("enabled", True),
                 },
             )
             return
@@ -356,15 +404,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"ok": False, "msg": "invalid json"})
             return
 
-        if self.path in ("/settings", "/v1/settings"):
+        if self.path in ("/settings", "/v1/settings", "/power", "/v1/power"):
             needed = {
                 k: payload[k]
                 for k in ("accessId", "accessSecret", "region", "deviceId", "enabled")
                 if k in payload
             }
+            if "on" in payload and "enabled" not in needed:
+                needed["enabled"] = bool(payload["on"])
             with _CONFIG_LOCK:
                 save_config(needed)
-            self._json(200, {"ok": True})
+                enabled = _CONFIG.get("enabled", True)
+            _RESET_ART.set()
+            power = None
+            try:
+                power = set_power(bool(enabled))
+            except Exception as exc:  # noqa: BLE001
+                log(f"power error: {exc}")
+            self._json(
+                200,
+                {"ok": True, "enabled": bool(enabled), "light": power},
+            )
             return
 
         if self.path not in ("/color", "/v1/color"):
